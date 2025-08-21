@@ -1,0 +1,123 @@
+version: '3.5'
+services:
+  etcd:
+    container_name: milvus-etcd-kaeri
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ../datasets/milvus/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: [ "CMD", "etcdctl", "endpoint", "health" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+  minio:
+    container_name: milvus-minio-kaeri
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - ../datasets/milvus/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+  standalone:
+    container_name: milvus-standalone-kaeri
+    image: milvusdb/milvus:v2.4.1
+    command: [ "milvus", "run", "standalone" ]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ../datasets/milvus/milvus:/var/lib/milvus
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9091/healthz" ]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./database/redis:/data    # database 폴더 아래에 redis 데이터 저장
+    command: redis-server --appendonly yes
+
+
+
+
+  db:
+    container_name: db
+    image: postgres:13.3
+    environment:
+      POSTGRES_USER: postgres # 다른걸로 바꿔도 됨
+      POSTGRES_PASSWORD: postgres # 다른걸로 바꿔도 됨
+      POSTGRES_DB: padong # 다른걸로 바꿔도 됨
+    ports:
+      - 5432:5432
+    volumes:
+
+      - padongdb:/var/lib/postgresql/data  # 데이터베이스 데이터를 저장할 Volume
+      - "./init/:/docker-entrypoint-initdb.d/"
+  admin:
+    container_name: kaeri-admin
+    image: kaeri-admin
+    command: npm run preview
+    ports:
+      - 5173:4173
+    depends_on:
+      - fastapi
+  attu:
+    container_name: attu
+    image: zilliz/attu:v2.2.8
+    environment:
+      MILVUS_URL: milvus-standalone-kaeri:19530
+    ports:
+      - "8007:3000"
+    depends_on:
+      - "standalone"
+  fastapi:
+    container_name: fastapi
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: fastapi
+    command: poetry run uvicorn main:app --host 0.0.0.0 --port 8077 --reload
+    volumes:
+      - "../kaeri_chatbot:/kaeri_chatbot"
+    ports:
+      - "8077:8077"
+    depends_on:
+      - "standalone"
+      - "redis"
+
+networks:
+  default:
+    name: milvus
+    driver: bridge
+
+volumes:
+  padongdb:
